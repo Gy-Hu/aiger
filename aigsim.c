@@ -168,6 +168,7 @@ static const char * USAGE =
 "-3              enable three valued stimulus in random simulation\n"
 "-r <vectors>    random stimulus of <vectors> input vectors\n"
 "-s <seed>       set seed of random number generator (default '0')\n"
+"-p              display flip rates for each latch (percentage of cycles with value 1)\n"
 ;
 
 #define ALLOC_STATES 100
@@ -198,6 +199,7 @@ main (int argc, char **argv)
   vectors = -1;
   ground = three = 0;
   seed = 0;
+  int show_flip_rates = 0;
 
   for (i = 1; i < argc; i++)
     {
@@ -237,6 +239,8 @@ main (int argc, char **argv)
 
 	  vectors = atoi (argv[++i]);
 	}
+      else if (!strcmp (argv[i], "-p"))
+	show_flip_rates = 1;
       else if (argv[i][0] == '-')
 	die ("invalid option '%s' (try '-h')", argv[i]);
       else if (!model_file_name)
@@ -270,6 +274,9 @@ main (int argc, char **argv)
 
   if (!vcd && delay)
     die ("can not use '-d' without '-v'");
+
+  if (check && show_flip_rates)
+    die ("can not combine '-p' with '-c'");
 
   model = aiger_init ();
 
@@ -448,6 +455,12 @@ readNextWitness:
   justice = calloc (model->num_justice, sizeof(justice[0]));
   for( i = 0; i < model->num_justice; i++ )
     justice[i] = calloc (model->justice[i].size, sizeof(justice[0][0]));
+
+  /* Initialize counter for latch flip rates (number of cycles each latch is 1) */
+  unsigned int *latch_ones = NULL;
+  if (show_flip_rates) {
+    latch_ones = calloc (model->num_latches, sizeof (latch_ones[0]));
+  }
 
   if (witness) {
     /* Read initial state */
@@ -651,6 +664,11 @@ readNextWitness:
 	{
 	  aiger_symbol *symbol = model->latches + j;
 	  current[symbol->lit / 2] = next[j];
+	  
+	  /* Count instances of latch value 1 if flip rates are requested */
+	  if (show_flip_rates && next[j] == 1) {
+	    latch_ones[j]++;
+	  }
 	}
 
       if (print)
@@ -703,6 +721,17 @@ readNextWitness:
 
   if (vcd)
     printf ("#%u\n", period * (i - 1));
+
+  /* Display latch flip rates if requested */
+  if (show_flip_rates && i > 1) {
+    printf("\nLatch Flip Rates (percentage of cycles with value 1):\n");
+    for (j = 0; j < model->num_latches; j++) {
+      /* Calculate flip rate as percentage */
+      double flip_rate = 100.0 * latch_ones[j] / (i - 1);
+      /* Display latch literal (ID) and flip rate */
+      printf("%u: %.0f%%\n", model->latches[j].lit, flip_rate);
+    }
+  }
 
   if (print)
     printf("Trace is a witness for: {");
@@ -785,6 +814,11 @@ readNextWitness:
   free (justice);
   free (current);
   free (next);
+  
+  /* Free latch flip rate counter if allocated */
+  if (show_flip_rates && latch_ones) {
+    free(latch_ones);
+  }
 
 skipWitness:;
   free (expected_prop);
