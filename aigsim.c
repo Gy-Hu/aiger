@@ -170,6 +170,7 @@ static const char * USAGE =
 "-s <seed>       set seed of random number generator (default '0')\n"
 "-p              display flip rates for each latch (percentage of cycles with value 1)\n"
 "-n <seeds>      number of seeds to use for flip rate calculation (requires -p and -r)\n"
+"-j <filename>   output flip rates to JSON file instead of stdout\n"
 ;
 
 #define ALLOC_STATES 100
@@ -202,6 +203,7 @@ main (int argc, char **argv)
   seed = 0;
   int show_flip_rates = 0;
   int num_seeds = 1;
+  const char *json_output_file = NULL;
 
   for (i = 1; i < argc; i++)
     {
@@ -252,6 +254,13 @@ main (int argc, char **argv)
 	  if (num_seeds <= 0)
 	    die ("argument to '-n' must be positive");
 	}
+      else if (!strcmp (argv[i], "-j"))
+	{
+	  if (i + 1 == argc)
+	    die ("argument to '-j' missing");
+
+	  json_output_file = argv[++i];
+	}
       else if (argv[i][0] == '-')
 	die ("invalid option '%s' (try '-h')", argv[i]);
       else if (!model_file_name)
@@ -291,6 +300,9 @@ main (int argc, char **argv)
     
   if (num_seeds > 1 && (!show_flip_rates || vectors < 0))
     die ("can only use '-n' with both '-p' and '-r'");
+
+  if (json_output_file && !show_flip_rates)
+    die ("can only use '-j' with '-p'");
 
   model = aiger_init ();
 
@@ -774,16 +786,49 @@ readNextWitness:
 
   /* Display latch flip rates if requested */
   if (show_flip_rates && total_cycles > 0) {
-    printf("\nLatch Flip Rates (percentage of cycles with value 1)");
-    if (num_seeds > 1) {
-      printf(" - Averaged over %d seeds", num_seeds);
-    }
-    printf(":\n");
-    for (j = 0; j < model->num_latches; j++) {
-      /* Calculate flip rate as percentage */
-      double flip_rate = 100.0 * latch_ones[j] / total_cycles;
-      /* Display latch literal (ID) and flip rate */
-      printf("%u: %.0f%%\n", model->latches[j].lit, flip_rate);
+    if (json_output_file) {
+      /* Output to JSON file */
+      FILE *json_file = fopen(json_output_file, "w");
+      if (!json_file)
+        die("failed to open JSON output file '%s'", json_output_file);
+      
+      fprintf(json_file, "{\n");
+      fprintf(json_file, "  \"flip_rates\": {\n");
+      for (j = 0; j < model->num_latches; j++) {
+        /* Calculate flip rate as percentage */
+        double flip_rate = 100.0 * latch_ones[j] / total_cycles;
+        /* Write latch ID and flip rate to JSON */
+        fprintf(json_file, "    \"%u\": %.0f", model->latches[j].lit, flip_rate);
+        if (j < model->num_latches - 1) {
+          fprintf(json_file, ",");
+        }
+        fprintf(json_file, "\n");
+      }
+      fprintf(json_file, "  },\n");
+      fprintf(json_file, "  \"metadata\": {\n");
+      fprintf(json_file, "    \"total_cycles\": %u,\n", total_cycles);
+      fprintf(json_file, "    \"num_seeds\": %d,\n", num_seeds);
+      if (seeded) {
+        fprintf(json_file, "    \"base_seed\": %u,\n", seed);
+      }
+      fprintf(json_file, "    \"num_latches\": %u\n", model->num_latches);
+      fprintf(json_file, "  }\n");
+      fprintf(json_file, "}\n");
+      
+      fclose(json_file);
+      printf("Flip rates written to JSON file: %s\n", json_output_file);
+    } else {
+      printf("\nLatch Flip Rates (percentage of cycles with value 1)");
+      if (num_seeds > 1) {
+        printf(" - Averaged over %d seeds", num_seeds);
+      }
+      printf(":\n");
+      for (j = 0; j < model->num_latches; j++) {
+        /* Calculate flip rate as percentage */
+        double flip_rate = 100.0 * latch_ones[j] / total_cycles;
+        /* Display latch literal (ID) and flip rate */
+        printf("%u: %.0f%%\n", model->latches[j].lit, flip_rate);
+      }
     }
   }
 
@@ -853,11 +898,10 @@ readNextWitness:
       free (states);      
     }
 
-  if (print) {
+  if (print)
     printf(" }\n");
-    if ( foundfair )
-      printf("Loop starts at timepoint: %d\n", looppoint);
-  }
+  if ( foundfair )
+    printf("Loop starts at timepoint: %d\n", looppoint);
   /* It is possible to have a constraint violation AND a check pass, if this
      is a witness of a bad state output and the constraint violation happens
      after the bad state output becomes high */
