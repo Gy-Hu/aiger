@@ -169,6 +169,7 @@ static const char * USAGE =
 "-r <vectors>    random stimulus of <vectors> input vectors\n"
 "-s <seed>       set seed of random number generator (default '0')\n"
 "-p              display flip rates for each latch (percentage of cycles with value 1)\n"
+"-n <seeds>      number of seeds to use for flip rate calculation (requires -p and -r)\n"
 ;
 
 #define ALLOC_STATES 100
@@ -200,6 +201,7 @@ main (int argc, char **argv)
   ground = three = 0;
   seed = 0;
   int show_flip_rates = 0;
+  int num_seeds = 1;
 
   for (i = 1; i < argc; i++)
     {
@@ -227,7 +229,7 @@ main (int argc, char **argv)
       else if (!strcmp (argv[i], "-s"))
 	{
 	  if (i + 1 == argc)
-	    die ("argvument to '-s' missing");
+	    die ("argument to '-s' missing");
 
 	  seed = atoi (argv[++i]);
 	  seeded = 1;
@@ -241,6 +243,15 @@ main (int argc, char **argv)
 	}
       else if (!strcmp (argv[i], "-p"))
 	show_flip_rates = 1;
+      else if (!strcmp (argv[i], "-n"))
+	{
+	  if (i + 1 == argc)
+	    die ("argument to '-n' missing");
+
+	  num_seeds = atoi (argv[++i]);
+	  if (num_seeds <= 0)
+	    die ("argument to '-n' must be positive");
+	}
       else if (argv[i][0] == '-')
 	die ("invalid option '%s' (try '-h')", argv[i]);
       else if (!model_file_name)
@@ -277,6 +288,9 @@ main (int argc, char **argv)
 
   if (check && show_flip_rates)
     die ("can not combine '-p' with '-c'");
+    
+  if (num_seeds > 1 && (!show_flip_rates || vectors < 0))
+    die ("can only use '-n' with both '-p' and '-r'");
 
   model = aiger_init ();
 
@@ -506,228 +520,268 @@ readNextWitness:
     }
 
   i = 1;
-  while (vectors)
-    {
-      if (vectors > 0)
-	{
-	  for (j = 1; j <= model->num_inputs; j++)
-	    {
-	      s = 17 * j + i;
-	      s %= 20;
-	      tmp = rand () >> s;
-	      tmp %= three + 2;
-	      current[j] = tmp;
-	    }
-
-	  vectors--;
-	}
-      else
-	{
-	  ch = nxtc (file);
-	  j = 1;
-
-	  if (ch == '.')
-	    break;
-
-	  /* First read and overwrite inputs.
-	   */
-	  while (j <= model->num_inputs)
-	    {
-	      if (ch == '0')
-		current[j] = 0;
-	      else if (ch == '1')
-		current[j] = 1;
-	      else if (ch == 'x')
-		current[j] = ground ? 0 : 2;
-	      else
-		die ("line %u: pos %u: expected '0' or '1'", i, j);
-
-	      j++;
-	      ch = nxtc (file);
-	    }
-
-	  if (ch != '\n')
-	    die ("line %u: pos %u: expected new line", i, j);
-	}
-
-      /* Simulate AND nodes.
-       */
-      for (j = 0; j < model->num_ands; j++)
-	{
-	  aiger_and *and = model->ands + j;
-	  l = deref (and->rhs0);
-	  r = deref (and->rhs1);
-	  tmp = l & r;
-	  tmp |= l & (r << 1);
-	  tmp |= r & (l << 1);
-	  current[and->lhs / 2] = tmp;
-	}
-      
-      /* SW110525 "constraint" outputs */
-      for (j = 0; j < model->num_constraints; j++) {
-	if (deref (model->constraints[j].lit) == 0) {
-	  constraintViolation = 1;	
-	  printf("Constraint c%d was violated at timepoint %d\n", j, i-1);
-	}
+  unsigned int total_cycles = 0;
+  
+  /* Multi-seed simulation for flip rate calculation */
+  unsigned int vectors_per_run = vectors;
+  
+  /* Main simulation loop, repeated for each seed if multiple seeds are requested */
+  for (int seed_run = 0; seed_run < num_seeds; seed_run++) {
+    /* Set different seed for each run if multiple seeds are requested */
+    if (num_seeds > 1) {
+      /* Use original seed as base and add seed_run for each iteration */
+      if (seeded) {
+        srand(seed + seed_run);
+      } else {
+        srand(seed_run);
       }
-      if ( constraintViolation ) break;
-
-      /* SW110524 Handling loops */
-      if ( findloop ) 
-	{
-	  /* SW110525 Storing the last time point at which fairness constraint
-	     was satisfied */
-	  for (j = 0; j < model->num_fairness; j++)  {
-	    if (deref (model->fairness[j].lit) == 1) fair[j] = i;
-	  }
-
-	  /* SW110525 Storing the last time point in which each literal 
-	     in every justice constraint was satisfied */
-	  for (j = 0; j < model->num_justice; j++)  {
-	    int k;
-	    for (k = 0; k < model->justice[j].size; k++)  {
-	      if (deref (model->justice[j].lits[k]) == 1) justice[j][k] = i;
-	    }
-	  }
-
-	  /* Store the current state vector in the list. 
-	     Allocate (more) memory for the list if necessary */
-	  if ( i > statesAlloc ) {
-	    statesAlloc+= ALLOC_STATES;
-	    states = (unsigned char**) 
-	      realloc( states, statesAlloc * sizeof(states[0]) );
-	  }
-	  states[i-1] = calloc (model->num_latches, sizeof (states[0][0]));
-	  for (j = 0; j < model->num_latches; j++)
-	    states[i-1][j] = deref( model->latches[j].lit );
-	}
-
-      /* SW110525 "bad" outputs */
-      for (j = 0; j < model->num_bad; j++)
-	bad[j]|= (deref (model->bad[j].lit) == 1);
-
-      /* Print current state of latches.
-       */
-      if (print)
-	{
-	  for (j = 0; j < model->num_latches; j++)
-	    put (model->latches[j].lit);
-	  fputc (' ', stdout);
-	}
-
-      if (vcd)
-	{
-	  printf ("#%u\n", period * (i - 1));
-
-	  if (i == 1)
-	    printf ("$dumpvars\n");
-
-	  for (j = 0; j < model->num_latches; j++)
-	    {
-	      put (model->latches[j].lit);
-	      fputs (idx_as_vcd_id ('l', j), stdout);
-	      fputc ('\n', stdout);
-	    }
-
-	  if (i == 1 && delay)
-	    {
-	      for (j = 0; j < model->num_inputs; j++)
-		{
-		  fputc ('x', stdout);
-		  fputs (idx_as_vcd_id ('i', j), stdout);
-		  fputc ('\n', stdout);
-		}
-
-	      for (j = 0; j < model->num_outputs; j++)
-		{
-		  fputc ('x', stdout);
-		  fputs (idx_as_vcd_id ('o', j), stdout);
-		  fputc ('\n', stdout);
-		}
-	    }
-
-	  if (i == 1)
-	    printf ("$end\n");
-	}
-
-      /* Then first calculate next state values of latches in  parallel.
-       */
-      for (j = 0; j < model->num_latches; j++)
-	{
-	  aiger_symbol *symbol = model->latches + j;
-	  next[j] = deref (symbol->next);
-	}
-
-      /* Then update new values of latches.
-       */
-      for (j = 0; j < model->num_latches; j++)
-	{
-	  aiger_symbol *symbol = model->latches + j;
-	  current[symbol->lit / 2] = next[j];
-	  
-	  /* Count instances of latch value 1 if flip rates are requested */
-	  if (show_flip_rates && next[j] == 1) {
-	    latch_ones[j]++;
-	  }
-	}
-
-      if (print)
-	{
-	  /* Print inputs.
-	   */
-	  for (j = 0; j < model->num_inputs; j++)
-	    put (model->inputs[j].lit);
-	  fputc (' ', stdout);
-
-	  /* Print outputs.
-	   */
-	  for (j = 0; j < model->num_outputs; j++)
-	    put (model->outputs[j].lit);
-	  fputc (' ', stdout);
-
-	  /* Print next state of latches.
-	   */
-	  for (j = 0; j < model->num_latches; j++)
-	    put (model->latches[j].lit);
-
-	  fputc ('\n', stdout);
-	}
-
-      if (vcd)
-	{
-	  if (delay)
-	    printf ("#%u\n", period * (i - 1) + 1);
-
-	  for (j = 0; j < model->num_inputs; j++)
-	    {
-	      put (model->inputs[j].lit);
-	      fputs (idx_as_vcd_id ('i', j), stdout);
-	      fputc ('\n', stdout);
-	    }
-
-	  if (delay)
-	    printf ("#%u\n", period * (i - 1) + 2);
-
-	  for (j = 0; j < model->num_outputs; j++)
-	    {
-	      put (model->outputs[j].lit);
-	      fputs (idx_as_vcd_id ('o', j), stdout);
-	      fputc ('\n', stdout);
-	    }
-	}
-
-      i++;
+      
+      /* Reset the vectors counter for each run */
+      vectors = vectors_per_run;
+      
+      /* Reset latch states to initial values for each run */
+      for (j = 0; j < model->num_latches; j++) {
+        aiger_symbol *symbol = model->latches + j;
+        current[symbol->lit/2] = 
+          (symbol->reset <= 1) ? symbol->reset : (ground ? 0 : 2);
+      }
+      
+      if (show_flip_rates && seed_run > 0 && !vcd && !check) {
+        printf("\n--- Run %d/%d (seed: %d) ---\n", 
+               seed_run + 1, num_seeds, seed + seed_run);
+      }
+    } else if (seeded) {
+      srand(seed);
     }
+    
+    while (vectors)
+      {
+	if (vectors > 0)
+	  {
+	    for (j = 1; j <= model->num_inputs; j++)
+	      {
+		s = 17 * j + i;
+		s %= 20;
+		tmp = rand () >> s;
+		tmp %= three + 2;
+		current[j] = tmp;
+	      }
 
-  if (vcd)
-    printf ("#%u\n", period * (i - 1));
+	    vectors--;
+	  }
+	else
+	  {
+	    ch = nxtc (file);
+	    j = 1;
+
+	    if (ch == '.')
+	      break;
+
+	    /* First read and overwrite inputs.
+	     */
+	    while (j <= model->num_inputs)
+	      {
+		if (ch == '0')
+		  current[j] = 0;
+		else if (ch == '1')
+		  current[j] = 1;
+		else if (ch == 'x')
+		  current[j] = ground ? 0 : 2;
+		else
+		  die ("line %u: pos %u: expected '0' or '1'", i, j);
+
+		j++;
+		ch = nxtc (file);
+	      }
+
+	    if (ch != '\n')
+	      die ("line %u: pos %u: expected new line", i, j);
+	  }
+
+	/* Simulate AND nodes.
+	 */
+	for (j = 0; j < model->num_ands; j++)
+	  {
+	    aiger_and *and = model->ands + j;
+	    l = deref (and->rhs0);
+	    r = deref (and->rhs1);
+	    tmp = l & r;
+	    tmp |= l & (r << 1);
+	    tmp |= r & (l << 1);
+	    current[and->lhs / 2] = tmp;
+	  }
+      
+	/* SW110525 "constraint" outputs */
+	for (j = 0; j < model->num_constraints; j++) {
+	  if (deref (model->constraints[j].lit) == 0) {
+	    constraintViolation = 1;	
+	    printf("Constraint c%d was violated at timepoint %d\n", j, i-1);
+	  }
+	}
+	if ( constraintViolation ) break;
+
+	/* SW110524 Handling loops */
+	if ( findloop ) 
+	  {
+	    /* SW110525 Storing the last time point at which fairness constraint
+	     * was satisfied */
+	    for (j = 0; j < model->num_fairness; j++)  {
+	      if (deref (model->fairness[j].lit) == 1) fair[j] = i;
+	    }
+
+	    /* SW110525 Storing the last time point in which each literal 
+	     * in every justice constraint was satisfied */
+	    for (j = 0; j < model->num_justice; j++)  {
+	      int k;
+	      for (k = 0; k < model->justice[j].size; k++)  {
+		if (deref (model->justice[j].lits[k]) == 1) justice[j][k] = i;
+	      }
+	    }
+
+	    /* Store the current state vector in the list. 
+	     * Allocate (more) memory for the list if necessary */
+	    if ( i > statesAlloc ) {
+	      statesAlloc+= ALLOC_STATES;
+	      states = (unsigned char**) 
+		realloc( states, statesAlloc * sizeof(states[0]) );
+	    }
+	    states[i-1] = calloc (model->num_latches, sizeof (states[0][0]));
+	    for (j = 0; j < model->num_latches; j++)
+	      states[i-1][j] = deref( model->latches[j].lit );
+	  }
+
+	/* SW110525 "bad" outputs */
+	for (j = 0; j < model->num_bad; j++)
+	  bad[j]|= (deref (model->bad[j].lit) == 1);
+
+	/* Print current state of latches.
+	 */
+	if (print)
+	  {
+	    for (j = 0; j < model->num_latches; j++)
+	      put (model->latches[j].lit);
+	    fputc (' ', stdout);
+	  }
+
+	if (vcd)
+	  {
+	    printf ("#%u\n", period * (i - 1));
+
+	    if (i == 1)
+	      printf ("$dumpvars\n");
+
+	    for (j = 0; j < model->num_latches; j++)
+	      {
+		put (model->latches[j].lit);
+		fputs (idx_as_vcd_id ('l', j), stdout);
+		fputc ('\n', stdout);
+	      }
+
+	    if (i == 1 && delay)
+	      {
+		for (j = 0; j < model->num_inputs; j++)
+		  {
+		    fputc ('x', stdout);
+		    fputs (idx_as_vcd_id ('i', j), stdout);
+		    fputc ('\n', stdout);
+		  }
+
+		for (j = 0; j < model->num_outputs; j++)
+		  {
+		    fputc ('x', stdout);
+		    fputs (idx_as_vcd_id ('o', j), stdout);
+		    fputc ('\n', stdout);
+		  }
+	      }
+
+	    if (i == 1)
+	      printf ("$end\n");
+	  }
+
+	/* Then first calculate next state values of latches in  parallel.
+	 */
+	for (j = 0; j < model->num_latches; j++)
+	  {
+	    aiger_symbol *symbol = model->latches + j;
+	    next[j] = deref (symbol->next);
+	  }
+
+	/* Then update new values of latches.
+	 */
+	for (j = 0; j < model->num_latches; j++)
+	  {
+	    aiger_symbol *symbol = model->latches + j;
+	    current[symbol->lit / 2] = next[j];
+	  
+	    /* Count instances of latch value 1 if flip rates are requested */
+	    if (show_flip_rates && next[j] == 1) {
+	      latch_ones[j]++;
+	    }
+	  }
+
+	if (print)
+	  {
+	    /* Print inputs.
+	     */
+	    for (j = 0; j < model->num_inputs; j++)
+	      put (model->inputs[j].lit);
+	    fputc (' ', stdout);
+
+	    /* Print outputs.
+	     */
+	    for (j = 0; j < model->num_outputs; j++)
+	      put (model->outputs[j].lit);
+	    fputc (' ', stdout);
+
+	    /* Print next state of latches.
+	     */
+	    for (j = 0; j < model->num_latches; j++)
+	      put (model->latches[j].lit);
+
+	    fputc ('\n', stdout);
+	  }
+
+	if (vcd)
+	  {
+	    if (delay)
+	      printf ("#%u\n", period * (i - 1) + 1);
+
+	    for (j = 0; j < model->num_inputs; j++)
+	      {
+		put (model->inputs[j].lit);
+		fputs (idx_as_vcd_id ('i', j), stdout);
+		fputc ('\n', stdout);
+	      }
+
+	    if (delay)
+	      printf ("#%u\n", period * (i - 1) + 2);
+
+	    for (j = 0; j < model->num_outputs; j++)
+	      {
+		put (model->outputs[j].lit);
+		fputs (idx_as_vcd_id ('o', j), stdout);
+		fputc ('\n', stdout);
+	      }
+	  }
+
+	i++;
+	total_cycles++;
+      }
+
+    if (vcd)
+      printf ("#%u\n", period * (i - 1));
+  }
 
   /* Display latch flip rates if requested */
-  if (show_flip_rates && i > 1) {
-    printf("\nLatch Flip Rates (percentage of cycles with value 1):\n");
+  if (show_flip_rates && total_cycles > 0) {
+    printf("\nLatch Flip Rates (percentage of cycles with value 1)");
+    if (num_seeds > 1) {
+      printf(" - Averaged over %d seeds", num_seeds);
+    }
+    printf(":\n");
     for (j = 0; j < model->num_latches; j++) {
       /* Calculate flip rate as percentage */
-      double flip_rate = 100.0 * latch_ones[j] / (i - 1);
+      double flip_rate = 100.0 * latch_ones[j] / total_cycles;
       /* Display latch literal (ID) and flip rate */
       printf("%u: %.0f%%\n", model->latches[j].lit, flip_rate);
     }
