@@ -33,3 +33,9 @@ testaigtoaig
 testsimpaig
 wrapstim
 makefile
+.DS_Store
+.vscode
+
+*.aag
+*.aig
+abc.history
