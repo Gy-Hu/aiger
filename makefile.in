@@ -18,6 +18,7 @@ aigfuzz \
 aiginfo \
 aigjoin \
 aigmiter \
+aigmiterc \
 aigmove \
 aignm \
 aigor \
@@ -82,6 +83,8 @@ aigjoin: aiger.o aigjoin.o makefile
 	$(CC) $(CFLAGS) -o $@ aigjoin.o aiger.o
 aigmiter: aiger.o aigmiter.o makefile
 	$(CC) $(CFLAGS) -o $@ aigmiter.o aiger.o
+aigmiterc: aiger.o aigmiterc.o makefile
+	$(CC) $(CFLAGS) -o $@ aigmiterc.o aiger.o
 aigmove: aiger.o aigmove.o makefile
 	$(CC) $(CFLAGS) -o $@ aigmove.o aiger.o
 aignm: aiger.o aignm.o makefile
