@@ -2168,6 +2168,11 @@ aiger_read_header (aiger * public, aiger_reader * reader)
 
   public->maxvar = reader->maxvar;
 
+  if (public->maxvar == UINT_MAX)
+    return aiger_error_u (private,
+			  "line %u: maximum variable index too large",
+			  reader->lineno_at_last_token_start);
+
   FIT (private->types, private->size_types, public->maxvar + 1);
   FIT (public->inputs, private->size_inputs, reader->inputs);
   FIT (public->latches, private->size_latches, reader->latches);
